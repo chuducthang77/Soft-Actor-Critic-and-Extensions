@@ -21,6 +21,9 @@ import time
 from torch.utils.tensorboard import SummaryWriter
 import argparse
 
+from torch.autograd import grad
+from torch.autograd import Variable
+
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -190,6 +193,13 @@ class Agent():
         action = self.actor_local.get_action(state).detach()
         return action
 
+    def gather_flat_grad(self, loss_grad):
+        # cnt = 0
+        # for g in loss_grad:
+        #    g_vector = g.contiguous().view(-1) if cnt == 0 else torch.cat([g_vector, g.contiguous().view(-1)])
+        #    cnt = 1
+        return torch.cat([p.view(-1) for p in loss_grad])  # g_vector
+
     def learn(self, step, experiences, gamma, d=1):
         """Updates actor, critics and entropy_alpha parameters using given batch of experience tuples.
         Q_targets = r + γ * (min_critic_target(next_state, actor_target(next_state)) - α *log_pi(next_action|next_state))
@@ -229,10 +239,10 @@ class Agent():
         # Update critics
         # critic 1
         self.critic1_optimizer.zero_grad()
-        critic1_loss.backward()
+        critic1_loss.backward(retain_graph=True)
         self.critic1_optimizer.step()
         # critic 2
-        self.critic2_optimizer.zero_grad()
+        self.critic2_optimizer.zero_grad(retain_graph=True)
         critic2_loss.backward()
         self.critic2_optimizer.step()
         if step % d == 0:
@@ -266,7 +276,24 @@ class Agent():
     
                 actor_loss = (FIXED_ALPHA * log_pis.squeeze(0).cpu() - self.critic1(states, actions_pred.squeeze(0)).cpu()- policy_prior_log_probs ).mean()
             # Minimize the loss
+
+            # total_d_actor_loss_d_theta = torch.zeros(self.actor_local.parameters())
+
             self.actor_optimizer.zero_grad()
+            d_actor_loss_d_phi_1 = grad(actor_loss, self.critic1.parameters())
+            flat_d_actor_loss_d_phi_1 = self.gather_flat_grad(d_actor_loss_d_phi_1)
+
+            d_critic_loss_d_phi_1 = grad(critic1_loss, self.critic1.parameters(), create_graph=True)
+            d_critic_loss_d_phi_2 = grad(critic2_loss, self.critic2.parameters())
+            d_critic_loss_d_phi_total = d_critic_loss_d_phi_1 + d_critic_loss_d_phi_2
+            flat_d_critic_loss_d_phi_1 = self.gather_flat_grad(d_critic_loss_d_phi_1)
+
+            flat_d_critic_loss_d_phi_1.backward(flat_d_actor_loss_d_phi_1)
+            for param in self.actor_local.parameters():
+                param.grad = 0
+
+            exit()
+
             actor_loss.backward()
             self.actor_optimizer.step()
 
